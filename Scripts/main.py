@@ -11,6 +11,7 @@ from utils.validators import (
     validate_movie_id, validate_dataframe
 )
 import json
+import os
 
 def process_movies_main(df):
     """Process the main movies dataframe"""
@@ -139,15 +140,20 @@ def process_ratings(data):
     return processed_data
 
 def main():
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    ROOT_DIR = os.path.dirname(BASE_DIR)
+    MOVIES_MAIN_PATH = os.path.join(ROOT_DIR, "Dataset", "movies_main.csv")
+    MOVIE_EXTENDED_PATH = os.path.join(ROOT_DIR, "Dataset", "movie_extended.csv")
+    RATINGS_PATH = os.path.join(ROOT_DIR, "Dataset", "ratings.json")
     """Main processing function"""
     try:
         log_info("Starting enhanced data cleaning process")
         
         # Step 1: Load the data
         log_info("Loading data files...")
-        movies_main = read_csv("movies_main.csv")
-        movie_extended = read_csv("movie_extended.csv")
-        ratings = read_json("ratings.json")
+        movies_main = read_csv(MOVIES_MAIN_PATH)
+        movie_extended = read_csv(MOVIE_EXTENDED_PATH)
+        ratings = read_json(RATINGS_PATH)   
         
         log_info(f"Loaded {len(movies_main)} rows from movies_main.csv")
         log_info(f"Loaded {len(movie_extended)} rows from movie_extended.csv")
