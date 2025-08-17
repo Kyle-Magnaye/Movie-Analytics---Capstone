@@ -17,6 +17,9 @@ def fill_missing_values(df, column, fetch_func, movie_id_column="id"):
     """Fill missing values using the fetch function"""
     from utils.logger import log_info
     
+    # Make a copy to avoid SettingWithCopyWarning
+    df = df.copy()
+    
     missing_mask = df[column].isna() | (df[column] == "") | (df[column] == "0")
     missing_count = missing_mask.sum()
     
@@ -45,6 +48,9 @@ def fill_missing_values(df, column, fetch_func, movie_id_column="id"):
 def clean_dataframe(df, text_columns=None, list_columns=None, date_columns=None):
     """Comprehensive dataframe cleaning"""
     from utils.logger import log_info
+    
+    # Make a copy to avoid SettingWithCopyWarning
+    df = df.copy()
     
     # Clean text columns
     if text_columns:

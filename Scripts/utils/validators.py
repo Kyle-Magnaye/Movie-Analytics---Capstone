@@ -1,85 +1,76 @@
 import pandas as pd
-from datetime import datetime
-from typing import Any, Dict, List
+from processors.data_cleaning import clean_text, clean_list_column, standardize_date_format
 
-def validate_budget(budget):
-    """Validate budget values"""
-    if budget is None:
-        return True  # Allow None
-    try:
-        budget_float = float(budget)
-        return budget_float >= 0
-    except (ValueError, TypeError):
-        return False
-
-def validate_revenue(revenue):
-    """Validate revenue values"""
-    if revenue is None:
-        return True  # Allow None
-    try:
-        revenue_float = float(revenue)
-        return revenue_float >= 0
-    except (ValueError, TypeError):
-        return False
-
-def validate_date(date_str):
-    """Validate date format (should be YYYY-MM-DD after cleaning)"""
-    if not date_str or pd.isna(date_str):
-        return True  # Allow None/empty
+def remove_duplicates(df, subset_columns):
+    """Remove duplicates and log the count"""
+    original_count = len(df)
+    df_clean = df.drop_duplicates(subset=subset_columns, keep='first')
+    duplicates_removed = original_count - len(df_clean)
     
-    try:
-        datetime.strptime(str(date_str), "%Y-%m-%d")
-        return True
-    except ValueError:
-        return False
-
-def validate_rating(rating):
-    """Validate rating values (typically 0-10)"""
-    if rating is None:
-        return True  # Allow None
-    try:
-        rating_float = float(rating)
-        return 0 <= rating_float <= 10
-    except (ValueError, TypeError):
-        return False
-
-def validate_movie_id(movie_id):
-    """Validate movie ID"""
-    if movie_id is None:
-        return False
-    try:
-        int(movie_id)
-        return True
-    except (ValueError, TypeError):
-        return False
-
-def validate_dataframe(df, validation_rules):
-    """Validate entire dataframe and return validation results"""
-    from utils.logger import log_info, log_error
+    from utils.logger import log_info
+    if duplicates_removed > 0:
+        log_info(f"Removed {duplicates_removed} duplicate rows based on {subset_columns}")
     
-    validation_results = {
-        'total_rows': len(df),
-        'invalid_rows': {},
-        'summary': {}
-    }
+    return df_clean
+
+def fill_missing_values(df, column, fetch_func, movie_id_column="id"):
+    """Fill missing values using the fetch function"""
+    from utils.logger import log_info
     
-    for column, validator in validation_rules.items():
-        if column not in df.columns:
-            continue
+    # Make a copy to avoid SettingWithCopyWarning
+    df = df.copy()
+    
+    missing_mask = df[column].isna() | (df[column] == "") | (df[column] == "0")
+    missing_count = missing_mask.sum()
+    
+    if missing_count == 0:
+        log_info(f"No missing values found in column '{column}'")
+        return df
+    
+    log_info(f"Filling {missing_count} missing values in column '{column}'")
+    filled_count = 0
+    
+    for idx in df[missing_mask].index:
+        try:
+            movie_id = df.at[idx, movie_id_column]
+            fetched_data = fetch_func(movie_id)
             
-        invalid_mask = ~df[column].apply(validator)
-        invalid_count = invalid_mask.sum()
-        
-        validation_results['invalid_rows'][column] = df[invalid_mask].index.tolist()
-        validation_results['summary'][column] = {
-            'total': len(df),
-            'invalid': invalid_count,
-            'valid_percentage': ((len(df) - invalid_count) / len(df)) * 100
-        }
-        
-        if invalid_count > 0:
-            log_error(f"Column '{column}': {invalid_count} invalid values found")
-        else:
-            log_info(f"Column '{column}': All values are valid")
+            if fetched_data and column in fetched_data and fetched_data[column]:
+                df.at[idx, column] = fetched_data[column]
+                filled_count += 1
+        except Exception as e:
+            from utils.logger import log_error
+            log_error(f"Error filling missing value for movie ID {movie_id}: {e}")
     
-    return validation_results
+    log_info(f"Successfully filled {filled_count} out of {missing_count} missing values in '{column}'")
+    return df
+
+def clean_dataframe(df, text_columns=None, list_columns=None, date_columns=None):
+    """Comprehensive dataframe cleaning"""
+    from utils.logger import log_info
+    
+    # Make a copy to avoid SettingWithCopyWarning
+    df = df.copy()
+    
+    # Clean text columns
+    if text_columns:
+        for col in text_columns:
+            if col in df.columns:
+                log_info(f"Cleaning text column: {col}")
+                df[col] = df[col].apply(clean_text)
+    
+    # Clean list columns
+    if list_columns:
+        for col in list_columns:
+            if col in df.columns:
+                log_info(f"Cleaning list column: {col}")
+                df[col] = df[col].apply(clean_list_column)
+    
+    # Clean and standardize date columns
+    if date_columns:
+        for col in date_columns:
+            if col in df.columns:
+                log_info(f"Standardizing date column: {col}")
+                df[col] = df[col].apply(standardize_date_format)
+    
+    return df

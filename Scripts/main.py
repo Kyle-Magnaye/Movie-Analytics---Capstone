@@ -182,5 +182,87 @@ def main():
         log_error(f"Critical error in main process: {e}")
         raise
 
+def main_updated():
+    """Updated main processing function to work with enriched data"""
+    try:
+        log_info("Starting data cleaning process on enriched data")
+        
+        # Step 1: Load the ENRICHED data files
+        log_info("Loading enriched data files...")
+        movies_main = read_csv("movies_main_enriched.csv")  # Use enriched files
+        movie_extended = read_csv("movie_extended_enriched.csv")  # Use enriched files
+        ratings = read_json("ratings.json")  # Original ratings file
+        
+        log_info(f"Loaded {len(movies_main)} rows from movies_main_enriched.csv")
+        log_info(f"Loaded {len(movie_extended)} rows from movie_extended_enriched.csv")
+        log_info(f"Loaded {len(ratings)} entries from ratings.json")
+        
+        # Step 2-4: Process each dataset (NO MORE API CALLS - just cleaning)
+        movies_main_clean = process_movies_main_no_api(movies_main)
+        movie_extended_clean = process_movie_extended_no_api(movie_extended)
+        ratings_clean = process_ratings(ratings)
+        
+        # Step 5: Save final cleaned files
+        log_info("Saving final cleaned files...")
+        write_csv(movies_main_clean, "movies_main_final.csv")
+        write_csv(movie_extended_clean, "movie_extended_final.csv")
+        write_json(ratings_clean, "ratings_final.json")
+        
+        # Final summary
+        log_info("="*50)
+        log_info("DATA CLEANING COMPLETED SUCCESSFULLY")
+        log_info(f"Movies Main: {len(movies_main_clean)} rows")
+        log_info(f"Movie Extended: {len(movie_extended_clean)} rows")
+        log_info(f"Ratings: {len(ratings_clean)} entries")
+        log_info("="*50)
+        
+    except Exception as e:
+        log_error(f"Critical error in cleaning process: {e}")
+        raise
+
+def process_movies_main_no_api(df):
+    """Process movies_main without API calls (data already enriched)"""
+    log_info("Processing movies_main_enriched.csv (cleaning only)")
+    
+    # Step 1: Remove duplicates
+    df = remove_duplicates(df, ["id"])
+    
+    # Step 2: Clean the data (no API calls needed)
+    text_columns = ["title"]
+    date_columns = ["release_date"]
+    
+    df = clean_dataframe(df, text_columns=text_columns, date_columns=date_columns)
+    
+    # Step 3: Validate data
+    validation_rules = {
+        "id": validate_movie_id,
+        "budget": validate_budget,
+        "revenue": validate_revenue,
+        "release_date": validate_date
+    }
+    
+    validation_results = validate_dataframe(df, validation_rules)
+    
+    log_info("Movies main processing completed (no API calls needed)")
+    return df
+
+def process_movie_extended_no_api(df):
+    """Process movie_extended without API calls (data already enriched)"""
+    log_info("Processing movie_extended_enriched.csv (cleaning only)")
+    
+    # Step 1: Remove duplicates
+    df = remove_duplicates(df, ["id"])
+    
+    # Step 2: Clean the data (no API calls needed)
+    list_columns = ["genres", "production_companies", "production_countries", "spoken_languages"]
+    
+    df = clean_dataframe(df, list_columns=list_columns)
+    
+    # Step 3: Basic validation
+    validation_rules = {"id": validate_movie_id}
+    validate_dataframe(df, validation_rules)
+    
+    log_info("Movie extended processing completed (no API calls needed)")
+    return df
 if __name__ == "__main__":
-    main()
+    main_updated()

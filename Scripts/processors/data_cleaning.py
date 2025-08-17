@@ -30,16 +30,24 @@ def clean_text(text):
 
 def clean_list_column(cell):
     """Enhanced list column cleaning"""
-    if not cell or pd.isna(cell) or str(cell).strip() == '' or str(cell).lower() == 'nan':
+    # Handle pandas NA values and empty cells safely
+    try:
+        if pd.isna(cell):
+            return []
+    except (ValueError, TypeError):
+        # If pd.isna() fails, cell might be an array or other complex type
+        pass
+    
+    # Convert to string and check for empty values
+    cell_str = str(cell).strip()
+    if not cell_str or cell_str == '' or cell_str.lower() == 'nan' or cell_str.lower() == 'none':
         return []
     
-    cell = str(cell)
-    
     # Handle JSON-like strings
-    if cell.startswith('[') and cell.endswith(']'):
+    if cell_str.startswith('[') and cell_str.endswith(']'):
         try:
             import ast
-            parsed = ast.literal_eval(cell)
+            parsed = ast.literal_eval(cell_str)
             if isinstance(parsed, list):
                 items = [clean_text(str(item)) for item in parsed if str(item).strip()]
                 return list(filter(None, set(items)))
@@ -48,7 +56,7 @@ def clean_list_column(cell):
     
     # Handle comma-separated strings
     items = []
-    for item in cell.split(','):
+    for item in cell_str.split(','):
         cleaned = clean_text(item)
         if cleaned:
             items.append(cleaned)
