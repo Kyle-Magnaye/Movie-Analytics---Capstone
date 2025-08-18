@@ -270,7 +270,7 @@ class ModifiedDataEnrichment:
                     if name and name not in writers:
                         writers.append(name)
 
-            return ', '.join(writers[:5]) if writers else None
+            return ', '.join(writers) if writers else None
 
         except Exception as e:
             log_error(f"Failed to fetch writers for movie ID {movie_id}: {e}")
@@ -286,7 +286,7 @@ class ModifiedDataEnrichment:
                 return None
             
             # Get top 5 cast members by order
-            cast_list = credits_data['cast'][:5]
+            cast_list = credits_data['cast'][:10]
             cast_names = [actor.get('name') for actor in cast_list if actor.get('name')]
             
             return ', '.join(cast_names) if cast_names else None
