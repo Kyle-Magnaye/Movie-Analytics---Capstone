@@ -6,21 +6,47 @@ from processors.tmdb_fetcher import TMDbFetcher
 from utils.logger import log_info, log_error
 from datetime import datetime
 import os
+import pickle
 
 class ModifiedDataEnrichment:
-    def __init__(self):
+    def __init__(self, checkpoint_interval=1000):
         self.tmdb = TMDbFetcher()
+        self.checkpoint_interval = checkpoint_interval
+        self.checkpoint_file = "enrichment_checkpoint.pkl"
+        self.progress_file = "enrichment_progress.json"
+        
         self.enrichment_stats = {
             'processed': 0,
             'enriched': 0,
             'failed': 0,
-            'total_api_calls': 0
+            'total_api_calls': 0,
+            'start_time': None,
+            'last_checkpoint': 0
         }
+        
         # Define the specific columns we want to enrich
         self.target_columns = [
             'budget',
             'revenue', 
             'genres',
+            'keywords',
+            'production_companies',
+            'production_countries',
+            'spoken_languages'
+        ]
+        
+        # Define the final columns we want in the output CSV
+        self.output_columns = [
+            'id',
+            'title',
+            'vote_average',
+            'vote_count',
+            'budget',
+            'revenue',
+            'popularity',
+            'rating',  # New column from TMDb API
+            'genres',
+            'keywords',
             'production_companies',
             'production_countries',
             'spoken_languages'
@@ -97,6 +123,71 @@ class ModifiedDataEnrichment:
             
         return None
     
+    def save_checkpoint(self, enriched_rows, current_index):
+        """Save current progress to checkpoint file"""
+        checkpoint_data = {
+            'enriched_rows': enriched_rows,
+            'current_index': current_index,
+            'stats': self.enrichment_stats,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        try:
+            with open(self.checkpoint_file, 'wb') as f:
+                pickle.dump(checkpoint_data, f)
+            
+            # Also save a JSON progress file for easy reading
+            progress_data = {
+                'current_index': current_index,
+                'total_processed': self.enrichment_stats['processed'],
+                'total_enriched': self.enrichment_stats['enriched'],
+                'total_failed': self.enrichment_stats['failed'],
+                'api_calls': self.enrichment_stats['total_api_calls'],
+                'timestamp': datetime.now().isoformat(),
+                'completion_percentage': 0  # Will be set by caller
+            }
+            
+            with open(self.progress_file, 'w') as f:
+                json.dump(progress_data, f, indent=2)
+                
+            log_info(f"Checkpoint saved at row {current_index}")
+            
+        except Exception as e:
+            log_error(f"Failed to save checkpoint: {e}")
+    
+    def load_checkpoint(self):
+        """Load progress from checkpoint file"""
+        if not os.path.exists(self.checkpoint_file):
+            log_info("No checkpoint file found, starting fresh")
+            return None, 0
+        
+        try:
+            with open(self.checkpoint_file, 'rb') as f:
+                checkpoint_data = pickle.load(f)
+            
+            self.enrichment_stats = checkpoint_data['stats']
+            log_info(f"Checkpoint loaded from row {checkpoint_data['current_index']}")
+            log_info(f"Previous stats: {checkpoint_data['stats']['processed']} processed, "
+                    f"{checkpoint_data['stats']['enriched']} enriched, "
+                    f"{checkpoint_data['stats']['api_calls']} API calls")
+            
+            return checkpoint_data['enriched_rows'], checkpoint_data['current_index']
+            
+        except Exception as e:
+            log_error(f"Failed to load checkpoint: {e}")
+            return None, 0
+    
+    def cleanup_checkpoint_files(self):
+        """Remove checkpoint files after successful completion"""
+        try:
+            if os.path.exists(self.checkpoint_file):
+                os.remove(self.checkpoint_file)
+            if os.path.exists(self.progress_file):
+                os.remove(self.progress_file)
+            log_info("Checkpoint files cleaned up")
+        except Exception as e:
+            log_error(f"Failed to cleanup checkpoint files: {e}")
+    
     def is_field_missing(self, value, field_name):
         """
         Check if a field is missing or needs enrichment
@@ -137,6 +228,10 @@ class ModifiedDataEnrichment:
             value = row.get(field)
             if self.is_field_missing(value, field):
                 missing_fields.append(field)
+        
+        # Always check for rating field since it's new
+        if 'rating' not in row or self.is_field_missing(row.get('rating'), 'rating'):
+            missing_fields.append('rating')
         
         if not missing_fields:
             log_info(f"Movie ID {movie_id}: No missing target data")
@@ -181,7 +276,14 @@ class ModifiedDataEnrichment:
                             enriched = True
                             log_info(f"Filled {field}: {tmdb_value}")
                 
-                elif field in ['genres', 'production_companies', 'production_countries', 'spoken_languages']:
+                elif field == 'rating':
+                    # Use vote_average as rating
+                    if 'vote_average' in tmdb_data and tmdb_data['vote_average'] is not None:
+                        row['rating'] = tmdb_data['vote_average']
+                        enriched = True
+                        log_info(f"Filled rating: {tmdb_data['vote_average']}")
+                
+                elif field in ['genres', 'keywords', 'production_companies', 'production_countries', 'spoken_languages']:
                     # List fields - convert to comma-separated strings
                     if field in tmdb_data and tmdb_data[field]:
                         tmdb_value = tmdb_data[field]
@@ -202,14 +304,30 @@ class ModifiedDataEnrichment:
     
     def enrich_dataset(self, df):
         """Enrich the movie dataset with target columns only"""
-        log_info("Starting enrichment of movie dataset")
+        log_info("Starting enrichment of movie dataset with checkpointing")
         log_info(f"Total rows to process: {len(df)}")
         log_info(f"Target columns: {', '.join(self.target_columns)}")
+        log_info(f"Checkpoint interval: {self.checkpoint_interval} rows")
         
-        enriched_rows = []
+        # Try to load from checkpoint
+        enriched_rows, start_index = self.load_checkpoint()
         
-        for index, row in df.iterrows():
+        if enriched_rows is None:
+            enriched_rows = []
+            start_index = 0
+            self.enrichment_stats['start_time'] = datetime.now()
+        else:
+            log_info(f"Resuming from row {start_index}")
+        
+        # Add rating column if it doesn't exist
+        if 'rating' not in df.columns:
+            df['rating'] = ""
+            log_info("Added 'rating' column to dataset")
+        
+        # Process rows starting from checkpoint
+        for index in range(start_index, len(df)):
             try:
+                row = df.iloc[index]
                 self.enrichment_stats['processed'] += 1
                 enriched_row, was_enriched = self.enrich_movie_row(row.to_dict())
                 
@@ -219,16 +337,56 @@ class ModifiedDataEnrichment:
                 
                 enriched_rows.append(enriched_row)
                 
-                # Progress logging
-                if (index + 1) % 25 == 0:
+                # Save checkpoint periodically
+                if (index + 1) % self.checkpoint_interval == 0:
                     log_info(f"Progress: {index + 1}/{len(df)} rows processed")
+                    completion_pct = ((index + 1) / len(df)) * 100
+                    
+                    # Update progress file with completion percentage
+                    if os.path.exists(self.progress_file):
+                        try:
+                            with open(self.progress_file, 'r') as f:
+                                progress_data = json.load(f)
+                            progress_data['completion_percentage'] = round(completion_pct, 2)
+                            with open(self.progress_file, 'w') as f:
+                                json.dump(progress_data, f, indent=2)
+                        except:
+                            pass
+                    
+                    self.save_checkpoint(enriched_rows, index + 1)
+                    
+                    # Estimate time remaining
+                    if self.enrichment_stats['start_time']:
+                        elapsed = datetime.now() - self.enrichment_stats['start_time']
+                        rate = (index + 1 - start_index) / elapsed.total_seconds()
+                        remaining_rows = len(df) - (index + 1)
+                        eta_seconds = remaining_rows / rate if rate > 0 else 0
+                        eta = str(datetime.timedelta(seconds=int(eta_seconds)))
+                        log_info(f"Processing rate: {rate:.2f} rows/sec, ETA: {eta}")
                 
             except Exception as e:
                 log_error(f"Error processing row {index + 1}: {e}")
                 self.enrichment_stats['failed'] += 1
+                # Add the original row even if processing failed
                 enriched_rows.append(row.to_dict())
         
         return pd.DataFrame(enriched_rows)
+    
+    def filter_output_columns(self, df):
+        """Filter the dataset to only include the specified output columns"""
+        log_info(f"Filtering dataset to include only: {', '.join(self.output_columns)}")
+        
+        # Add missing columns with empty values
+        for col in self.output_columns:
+            if col not in df.columns:
+                df[col] = ""
+                log_info(f"Added missing column: {col}")
+        
+        # Select only the desired columns in the specified order
+        filtered_df = df[self.output_columns].copy()
+        
+        log_info(f"Dataset filtered from {len(df.columns)} to {len(filtered_df.columns)} columns")
+        return filtered_df
     
     def print_enrichment_summary(self):
         """Print a summary of the enrichment process"""
@@ -236,6 +394,7 @@ class ModifiedDataEnrichment:
         print("DATA ENRICHMENT SUMMARY")
         print("="*70)
         print(f"Target columns: {', '.join(self.target_columns)}")
+        print(f"Output columns: {', '.join(self.output_columns)}")
         print(f"\nProcessed: {self.enrichment_stats['processed']} rows")
         print(f"Enriched:  {self.enrichment_stats['enriched']} rows")
         print(f"Failed:    {self.enrichment_stats['failed']} rows")
@@ -245,6 +404,15 @@ class ModifiedDataEnrichment:
             print(f"Success:   {success_rate:.1f}%")
         
         print(f"\nTotal API calls made: {self.enrichment_stats['total_api_calls']}")
+        
+        if self.enrichment_stats['start_time']:
+            total_time = datetime.now() - self.enrichment_stats['start_time']
+            print(f"Total processing time: {total_time}")
+            
+            if self.enrichment_stats['processed'] > 0:
+                rate = self.enrichment_stats['processed'] / total_time.total_seconds()
+                print(f"Average processing rate: {rate:.2f} rows/second")
+        
         print("="*70)
 
 def main():
@@ -254,13 +422,13 @@ def main():
         
         log_info("Starting targeted data enrichment process...")
         start_time = datetime.now()
-
+    
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         ROOT_DIR = os.path.dirname(BASE_DIR)
-        MOVIES_MAIN_PATH = os.path.join(ROOT_DIR,"Scripts","TMDB_all_movies.csv") 
-        output_file_path = "movies_dataset_enriched.csv"
+        MOVIES_MAIN_PATH = os.path.join(ROOT_DIR, "Dataset", "TMDB_movie_dataset_v11.csv")
+        output_file_path = "TMDB_all_movies_enriched.csv"
         
-        # Load the dataset
+        # Load the dataset 
         log_info(f"Loading dataset from {MOVIES_MAIN_PATH}...")
         df = read_csv(MOVIES_MAIN_PATH)
         
