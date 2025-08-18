@@ -24,32 +24,47 @@ class ModifiedDataEnrichment:
             'last_checkpoint': 0
         }
         
-        # Define the specific columns we want to enrich
+        # Define the specific columns we want to enrich (excluding 'id')
         self.target_columns = [
+            'title',
+            'release_date',
             'budget',
             'revenue', 
+            'vote_average',
+            'vote_count',
+            'popularity',
+            'rating',
+            'runtime',
             'genres',
             'keywords',
             'production_companies',
             'production_countries',
-            'spoken_languages'
+            'spoken_languages',
+            'director',
+            'writers',  # Screenplay writers
+            'cast_top_5'  # Top 5 cast members
         ]
         
         # Define the final columns we want in the output CSV
         self.output_columns = [
             'id',
             'title',
+            'release_date',
             'vote_average',
             'vote_count',
             'budget',
             'revenue',
             'popularity',
-            'rating',  # New column from TMDb API
+            'rating',
+            'runtime',
             'genres',
             'keywords',
             'production_companies',
             'production_countries',
-            'spoken_languages'
+            'spoken_languages',
+            'director',
+            'writers',
+            'cast_top_5'
         ]
     
     def find_movie_by_search(self, title, release_year=None):
@@ -203,34 +218,88 @@ class ModifiedDataEnrichment:
         if str_value in ['', 'nan', 'NaN', 'NULL', 'null', 'None']:
             return True
             
-        # For numeric fields (budget, revenue), treat 0 as missing
-        if field_name in ['budget', 'revenue']:
+        # For numeric fields (budget, revenue, vote_count, popularity, runtime), treat 0 as missing
+        if field_name in ['budget', 'revenue', 'vote_count', 'popularity', 'runtime']:
             try:
                 numeric_value = float(str_value)
                 return numeric_value == 0 or numeric_value < 0  # Also treat negative values as invalid
             except (ValueError, TypeError):
                 return True
                 
+        # For rating fields (vote_average, rating), treat 0 as missing
+        if field_name in ['vote_average', 'rating']:
+            try:
+                rating_value = float(str_value)
+                return rating_value == 0 or rating_value < 0
+            except (ValueError, TypeError):
+                return True
+        
         # For list-type fields, check for empty brackets and variations
         if field_name in ['genres', 'keywords', 'production_companies', 'production_countries', 'spoken_languages']:
             # Remove all whitespace and check for empty list indicators
             cleaned_value = str_value.replace(' ', '').replace('\t', '').replace('\n', '')
             empty_indicators = ['[]', '[ ]', '[,]', '""', "''", '{}', 'false', 'FALSE']
             return cleaned_value.lower() in [ind.lower() for ind in empty_indicators]
-            
-        # For rating field, treat 0 as missing
-        if field_name == 'rating':
-            try:
-                rating_value = float(str_value)
-                return rating_value == 0 or rating_value < 0
-            except (ValueError, TypeError):
-                return True
+        
+        # For text fields, check for meaningful content
+        if field_name in ['title', 'original_title', 'overview', 'tagline', 'status', 'director', 'writers', 'cast_top_5', 'homepage']:
+            # These should have actual text content
+            meaningful_content = str_value not in ['', '0', 'false', 'FALSE', 'unknown', 'Unknown', 'N/A', 'n/a']
+            return not meaningful_content
+        
+        # For boolean fields
+        if field_name in ['adult']:
+            return str_value.lower() in ['', 'nan', 'none', 'null']
             
         return False
     
+    def get_writers_from_credits(self, credits_data):
+        """
+        Extract writers/screenplay writers from credits
+        Returns comma-separated string of writer names
+        """
+        try:
+            if not credits_data or 'crew' not in credits_data:
+                return None
+            
+            writers = []
+            writer_jobs = ['Writer', 'Screenplay', 'Story', 'Novel', 'Adaptation']
+            
+            for crew_member in credits_data['crew']:
+                job = crew_member.get('job', '')
+                if any(writer_job in job for writer_job in writer_jobs):
+                    name = crew_member.get('name')
+                    if name and name not in writers:
+                        writers.append(name)
+            
+            return ', '.join(writers[:5]) if writers else None  # Limit to top 5 writers
+            
+        except Exception as e:
+            log_error(f"Error extracting writers: {e}")
+            return None
+    
+    def get_top_cast_from_credits(self, credits_data):
+        """
+        Extract top 5 cast members from credits
+        Returns comma-separated string of actor names
+        """
+        try:
+            if not credits_data or 'cast' not in credits_data:
+                return None
+            
+            # Get top 5 cast members by order
+            cast_list = credits_data['cast'][:5]
+            cast_names = [actor.get('name') for actor in cast_list if actor.get('name')]
+            
+            return ', '.join(cast_names) if cast_names else None
+            
+        except Exception as e:
+            log_error(f"Error extracting cast: {e}")
+            return None
+    
     def enrich_movie_row(self, row):
         """
-        Enrich a single movie row with missing data from the target columns
+        Enrich a single movie row with missing data from ALL target columns (except id)
         Returns: (enriched_row, was_enriched)
         """
         movie_id = row.get('id')
@@ -240,29 +309,34 @@ class ModifiedDataEnrichment:
         # Extract year from release_date if available
         release_year = self.extract_release_year(release_date)
         
-        # Check what target data is missing
+        # Check ALL target columns for missing data (except id)
         missing_fields = []
         for field in self.target_columns:
-            value = row.get(field)
-            if self.is_field_missing(value, field):
-                missing_fields.append(field)
-        
-        # Always check for rating field since it's new
-        if 'rating' not in row or self.is_field_missing(row.get('rating'), 'rating'):
-            missing_fields.append('rating')
+            if field != 'id':  # Skip id column
+                value = row.get(field)
+                if self.is_field_missing(value, field):
+                    missing_fields.append(field)
         
         if not missing_fields:
-            log_info(f"Movie ID {movie_id}: No missing target data")
+            log_info(f"Movie ID {movie_id}: No missing data")
             return row, False
         
         log_info(f"Movie ID {movie_id} ('{title}'): Missing fields: {missing_fields}")
         
         # Try to fetch data using movie ID first
         tmdb_data = None
+        credits_data = None
+        
         if movie_id and str(movie_id) != 'nan' and str(movie_id).strip() != '':
             try:
-                tmdb_data = self.tmdb.fetch_movie_details(movie_id)
+                # Fetch movie details with credits appended to get director in one call
+                tmdb_data = self.tmdb.fetch_movie_details(movie_id, append_to_response="credits")
                 self.enrichment_stats['total_api_calls'] += 1
+                
+                # Extract credits data if present
+                if 'credits' in tmdb_data:
+                    credits_data = tmdb_data['credits']
+                    
             except Exception as e:
                 log_error(f"Failed to fetch with ID {movie_id}: {e}")
         
@@ -271,8 +345,13 @@ class ModifiedDataEnrichment:
             try:
                 search_movie_id = self.find_movie_by_search(title, release_year)
                 if search_movie_id:
-                    tmdb_data = self.tmdb.fetch_movie_details(search_movie_id)
+                    tmdb_data = self.tmdb.fetch_movie_details(search_movie_id, append_to_response="credits")
                     self.enrichment_stats['total_api_calls'] += 1
+                    
+                    # Extract credits data if present
+                    if 'credits' in tmdb_data:
+                        credits_data = tmdb_data['credits']
+                    
                     # Update the ID with the found one if it was missing
                     if self.is_field_missing(row.get('id'), 'id'):
                         row['id'] = search_movie_id
@@ -283,23 +362,56 @@ class ModifiedDataEnrichment:
         if tmdb_data:
             enriched = False
             
-            # Map TMDb fields to our columns with proper processing
+            # Process each missing field
             for field in missing_fields:
-                if field in ['budget', 'revenue']:
+                if field in ['budget', 'revenue', 'runtime', 'vote_count', 'popularity']:
                     # Direct numeric mapping
                     if field in tmdb_data and tmdb_data[field] is not None:
                         tmdb_value = tmdb_data[field]
-                        if tmdb_value and tmdb_value != 0:  # Only use non-zero values
+                        # For budget and revenue, only use non-zero values
+                        if field in ['budget', 'revenue']:
+                            if tmdb_value and tmdb_value != 0:
+                                row[field] = tmdb_value
+                                enriched = True
+                                log_info(f"Filled {field}: {tmdb_value}")
+                        else:
+                            # For other numeric fields, accept any value including 0
                             row[field] = tmdb_value
                             enriched = True
                             log_info(f"Filled {field}: {tmdb_value}")
                 
-                elif field == 'rating':
-                    # Use vote_average as rating
-                    if 'vote_average' in tmdb_data and tmdb_data['vote_average'] is not None:
-                        row['rating'] = tmdb_data['vote_average']
+                elif field in ['vote_average', 'rating']:
+                    # Use vote_average for rating field
+                    tmdb_field = 'vote_average'
+                    if tmdb_field in tmdb_data and tmdb_data[tmdb_field] is not None:
+                        tmdb_value = tmdb_data[tmdb_field]
+                        if tmdb_value and tmdb_value > 0:  # Only use positive ratings
+                            row[field] = tmdb_value
+                            enriched = True
+                            log_info(f"Filled {field}: {tmdb_value}")
+                
+                elif field in ['title', 'release_date', 'overview', 'tagline', 'status']:
+                    # Direct text field mapping
+                    if field in tmdb_data and tmdb_data[field] is not None:
+                        tmdb_value = str(tmdb_data[field]).strip()
+                        if tmdb_value and tmdb_value not in ['', 'null', 'None']:
+                            row[field] = tmdb_value
+                            enriched = True
+                            log_info(f"Filled {field}: {tmdb_value}")
+                
+                elif field == 'director':
+                    # Extract director from credits data
+                    director_name = None
+                    if credits_data and 'crew' in credits_data:
+                        for crew_member in credits_data['crew']:
+                            if crew_member.get('job') == 'Director':
+                                director_name = crew_member.get('name')
+                                break
+                    
+                    if director_name:
+                        row[field] = director_name
                         enriched = True
-                        log_info(f"Filled rating: {tmdb_data['vote_average']}")
+                        log_info(f"Filled director: {director_name}")
                 
                 elif field in ['genres', 'keywords', 'production_companies', 'production_countries', 'spoken_languages']:
                     # List fields - convert to comma-separated strings
@@ -307,9 +419,30 @@ class ModifiedDataEnrichment:
                         tmdb_value = tmdb_data[field]
                         if isinstance(tmdb_value, list) and tmdb_value:
                             # Convert list to comma-separated string
-                            row[field] = ', '.join(str(item) for item in tmdb_value)
-                            enriched = True
-                            log_info(f"Filled {field}: {row[field]}")
+                            if field == 'keywords':
+                                # Keywords might have objects with 'name' field
+                                if tmdb_value and isinstance(tmdb_value[0], dict):
+                                    keyword_names = [kw.get('name', str(kw)) for kw in tmdb_value if kw.get('name')]
+                                    if keyword_names:
+                                        row[field] = ', '.join(keyword_names)
+                                        enriched = True
+                                        log_info(f"Filled {field}: {row[field]}")
+                                else:
+                                    row[field] = ', '.join(str(item) for item in tmdb_value)
+                                    enriched = True
+                                    log_info(f"Filled {field}: {row[field]}")
+                            else:
+                                # For other list fields, extract names if they're objects
+                                if tmdb_value and isinstance(tmdb_value[0], dict):
+                                    names = [item.get('name', str(item)) for item in tmdb_value if item.get('name')]
+                                    if names:
+                                        row[field] = ', '.join(names)
+                                        enriched = True
+                                        log_info(f"Filled {field}: {row[field]}")
+                                else:
+                                    row[field] = ', '.join(str(item) for item in tmdb_value)
+                                    enriched = True
+                                    log_info(f"Filled {field}: {row[field]}")
                         elif isinstance(tmdb_value, str) and tmdb_value.strip():
                             row[field] = tmdb_value
                             enriched = True
@@ -321,10 +454,10 @@ class ModifiedDataEnrichment:
             return row, False
     
     def enrich_dataset(self, df):
-        """Enrich the movie dataset with target columns only"""
+        """Enrich the movie dataset with ALL target columns (except id)"""
         log_info("Starting enrichment of movie dataset with checkpointing")
         log_info(f"Total rows to process: {len(df)}")
-        log_info(f"Target columns: {', '.join(self.target_columns)}")
+        log_info(f"Will check these columns for missing data: {', '.join([col for col in self.target_columns if col != 'id'])}")
         log_info(f"Checkpoint interval: {self.checkpoint_interval} rows")
         
         # Try to load from checkpoint
@@ -337,10 +470,12 @@ class ModifiedDataEnrichment:
         else:
             log_info(f"Resuming from row {start_index}")
         
-        # Add rating column if it doesn't exist
-        if 'rating' not in df.columns:
-            df['rating'] = ""
-            log_info("Added 'rating' column to dataset")
+        # Add missing target columns if they don't exist
+        missing_columns = [col for col in self.target_columns if col not in df.columns]
+        if missing_columns:
+            log_info(f"Adding missing columns: {missing_columns}")
+            for col in missing_columns:
+                df[col] = ""
         
         # Process rows starting from checkpoint
         for index in range(start_index, len(df)):
@@ -382,6 +517,9 @@ class ModifiedDataEnrichment:
                         eta = str(datetime.timedelta(seconds=int(eta_seconds)))
                         log_info(f"Processing rate: {rate:.2f} rows/sec, ETA: {eta}")
                 
+                # Small delay to respect API rate limits
+                time.sleep(0.1)
+                
             except Exception as e:
                 log_error(f"Error processing row {index + 1}: {e}")
                 self.enrichment_stats['failed'] += 1
@@ -411,7 +549,7 @@ class ModifiedDataEnrichment:
         print("\n" + "="*70)
         print("DATA ENRICHMENT SUMMARY")
         print("="*70)
-        print(f"Target columns: {', '.join(self.target_columns)}")
+        print(f"Target columns checked: {', '.join([col for col in self.target_columns if col != 'id'])}")
         print(f"Output columns: {', '.join(self.output_columns)}")
         print(f"\nProcessed: {self.enrichment_stats['processed']} rows")
         print(f"Enriched:  {self.enrichment_stats['enriched']} rows")
@@ -438,7 +576,7 @@ def main():
     try:
         enricher = ModifiedDataEnrichment()
         
-        log_info("Starting targeted data enrichment process...")
+        log_info("Starting comprehensive data enrichment process...")
         start_time = datetime.now()
         
         # Define your input file path here
@@ -459,30 +597,38 @@ def main():
         missing_target_cols = [col for col in enricher.target_columns if col not in df.columns]
         
         if missing_target_cols:
-            log_info(f"Note: These target columns are missing from dataset and will be added: {missing_target_cols}")
+            log_info(f"These target columns are missing from dataset and will be added: {missing_target_cols}")
             # Add missing columns with empty values
             for col in missing_target_cols:
                 df[col] = ""
         
-        log_info(f"Will attempt to enrich these columns: {existing_target_cols}")
+        log_info(f"Will check these columns for missing data: {[col for col in enricher.target_columns if col != 'id']}")
         
         # Enrich the dataset
         enriched_df = enricher.enrich_dataset(df)
         
+        # Filter to only desired output columns
+        final_df = enricher.filter_output_columns(enriched_df)
+        
         # Save enriched file
         log_info(f"Saving enriched dataset to {output_file_path}...")
-        write_csv(enriched_df, output_file_path)
+        write_csv(final_df, output_file_path)
         
         # Calculate total time
         end_time = datetime.now()
         total_time = end_time - start_time
         
+        # Clean up checkpoint files on successful completion
+        enricher.cleanup_checkpoint_files()
+        
         # Print summary
         enricher.print_enrichment_summary()
         print(f"\nTotal processing time: {total_time}")
         print(f"Enriched file saved: {output_file_path}")
+        print(f"Final dataset shape: {final_df.shape}")
+        print(f"Final columns: {list(final_df.columns)}")
         
-        log_info("Targeted data enrichment completed successfully!")
+        log_info("Comprehensive data enrichment completed successfully!")
         
     except Exception as e:
         log_error(f"Critical error in enrichment process: {e}")
