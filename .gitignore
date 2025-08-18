@@ -1,0 +1,6 @@
+# .gitignore
+
+# Ignore large data files to keep the repository size manageable.
+# This includes the TMDB movie dataset.
+TMDB_all_movies.csv
+final_dataset.csv
