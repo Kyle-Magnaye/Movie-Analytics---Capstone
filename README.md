@@ -1,1 +1,1 @@
-# Movie-Analytics Capstone
+# Movie Analytics Capstone
