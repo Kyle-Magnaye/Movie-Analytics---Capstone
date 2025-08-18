@@ -40,9 +40,7 @@ class ModifiedDataEnrichment:
             'production_companies',
             'production_countries',
             'spoken_languages',
-            'director',
-            'writers',  # Screenplay writers
-            'cast_top_5'  # Top 5 cast members
+            'director'  # Added director column
         ]
         
         # Define the final columns we want in the output CSV
@@ -62,9 +60,7 @@ class ModifiedDataEnrichment:
             'production_companies',
             'production_countries',
             'spoken_languages',
-            'director',
-            'writers',
-            'cast_top_5'
+            'director'  # Added director to output
         ]
     
     def find_movie_by_search(self, title, release_year=None):
@@ -215,14 +211,14 @@ class ModifiedDataEnrichment:
         str_value = str(value).strip()
         
         # Check for common missing value indicators
-        if str_value in ['', 'nan', 'NaN', 'NULL', 'null', 'None','[]','[ ]']:
+        if str_value in ['', 'nan', 'NaN', 'NULL', 'null', 'None']:
             return True
             
         # For numeric fields (budget, revenue, vote_count, popularity, runtime), treat 0 as missing
         if field_name in ['budget', 'revenue', 'vote_count', 'popularity', 'runtime']:
             try:
                 numeric_value = float(str_value)
-                return numeric_value == 0 or numeric_value < 0  
+                return numeric_value == 0 or numeric_value < 0  # Also treat negative values as invalid
             except (ValueError, TypeError):
                 return True
                 
@@ -241,60 +237,29 @@ class ModifiedDataEnrichment:
             empty_indicators = ['[]', '[ ]', '[,]', '""', "''", '{}', 'false', 'FALSE']
             return cleaned_value.lower() in [ind.lower() for ind in empty_indicators]
         
-        # For text fields, check for meaningful content
-        if field_name in ['title', 'director', 'writers', 'cast_top_5',]:
+        # For text fields (title, overview, tagline, status, director), check for meaningful content
+        if field_name in ['title', 'director']:
             # These should have actual text content
             meaningful_content = str_value not in ['', '0', 'false', 'FALSE', 'unknown', 'Unknown', 'N/A', 'n/a']
             return not meaningful_content
-        
-        # For boolean fields
-        if field_name in ['adult']:
-            return str_value.lower() in ['', 'nan', 'none', 'null']
             
         return False
     
-    def get_writers_from_credits(self, credits_data):
+    def get_director_from_credits(self, movie_id):
         """
-        Extract writers/screenplay writers from credits
-        Returns comma-separated string of writer names
+        Fetch director information from movie credits
+        Returns the director's name or None
         """
         try:
-            if not credits_data or 'crew' not in credits_data:
-                return None
-            
-            writers = []
-            writer_jobs = ['Writer', 'Screenplay', 'Story', 'Novel', 'Adaptation']
-            
-            for crew_member in credits_data['crew']:
-                job = crew_member.get('job', '')
-                if any(writer_job in job for writer_job in writer_jobs):
-                    name = crew_member.get('name')
-                    if name and name not in writers:
-                        writers.append(name)
-            
-            return ', '.join(writers[:5]) if writers else None  # Limit to top 5 writers
-            
-        except Exception as e:
-            log_error(f"Error extracting writers: {e}")
+            credits = self.tmdb.get_movie_credits(movie_id)
+            if credits and 'crew' in credits:
+                # Find the director in the crew
+                for crew_member in credits['crew']:
+                    if crew_member.get('job') == 'Director':
+                        return crew_member.get('name')
             return None
-    
-    def get_top_cast_from_credits(self, credits_data):
-        """
-        Extract top 5 cast members from credits
-        Returns comma-separated string of actor names
-        """
-        try:
-            if not credits_data or 'cast' not in credits_data:
-                return None
-            
-            # Get top 5 cast members by order
-            cast_list = credits_data['cast'][:5]
-            cast_names = [actor.get('name') for actor in cast_list if actor.get('name')]
-            
-            return ', '.join(cast_names) if cast_names else None
-            
         except Exception as e:
-            log_error(f"Error extracting cast: {e}")
+            log_error(f"Failed to fetch director for movie ID {movie_id}: {e}")
             return None
     
     def enrich_movie_row(self, row):
@@ -390,7 +355,7 @@ class ModifiedDataEnrichment:
                             enriched = True
                             log_info(f"Filled {field}: {tmdb_value}")
                 
-                elif field in ['title', 'release_date', 'overview', 'tagline', 'status']:
+                elif field in ['title', 'release_date']:
                     # Direct text field mapping
                     if field in tmdb_data and tmdb_data[field] is not None:
                         tmdb_value = str(tmdb_data[field]).strip()
@@ -400,14 +365,7 @@ class ModifiedDataEnrichment:
                             log_info(f"Filled {field}: {tmdb_value}")
                 
                 elif field == 'director':
-                    # Extract director from credits data
-                    director_name = None
-                    if credits_data and 'crew' in credits_data:
-                        for crew_member in credits_data['crew']:
-                            if crew_member.get('job') == 'Director':
-                                director_name = crew_member.get('name')
-                                break
-                    
+                    director_name = self.get_director_from_credits(row.get('id'))
                     if director_name:
                         row[field] = director_name
                         enriched = True
