@@ -192,21 +192,39 @@ class ModifiedDataEnrichment:
         """
         Check if a field is missing or needs enrichment
         """
-        if pd.isna(value) or value == "" or str(value).strip() == "" or str(value).lower() == 'nan':
+        # Handle basic missing values
+        if pd.isna(value) or value is None:
+            return True
+            
+        # Convert to string for consistent checking
+        str_value = str(value).strip()
+        
+        # Check for common missing value indicators
+        if str_value in ['', 'nan', 'NaN', 'NULL', 'null', 'None']:
             return True
             
         # For numeric fields (budget, revenue), treat 0 as missing
         if field_name in ['budget', 'revenue']:
             try:
-                numeric_value = float(str(value))
-                return numeric_value == 0
+                numeric_value = float(str_value)
+                return numeric_value == 0 or numeric_value < 0  # Also treat negative values as invalid
             except (ValueError, TypeError):
                 return True
                 
-        # For list-type fields, check for empty brackets or empty strings
-        if field_name in ['genres', 'production_companies', 'production_countries', 'spoken_languages']:
-            str_value = str(value).strip()
-            return str_value in ['', '[]', 'nan']
+        # For list-type fields, check for empty brackets and variations
+        if field_name in ['genres', 'keywords', 'production_companies', 'production_countries', 'spoken_languages']:
+            # Remove all whitespace and check for empty list indicators
+            cleaned_value = str_value.replace(' ', '').replace('\t', '').replace('\n', '')
+            empty_indicators = ['[]', '[ ]', '[,]', '""', "''", '{}', 'false', 'FALSE']
+            return cleaned_value.lower() in [ind.lower() for ind in empty_indicators]
+            
+        # For rating field, treat 0 as missing
+        if field_name == 'rating':
+            try:
+                rating_value = float(str_value)
+                return rating_value == 0 or rating_value < 0
+            except (ValueError, TypeError):
+                return True
             
         return False
     
@@ -422,9 +440,10 @@ def main():
         
         log_info("Starting targeted data enrichment process...")
         start_time = datetime.now()
-    
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        ROOT_DIR = os.path.dirname(BASE_DIR)
+        
+        # Define your input file path here
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__)) 
+        ROOT_DIR = os.path.dirname(BASE_DIR) 
         MOVIES_MAIN_PATH = os.path.join(ROOT_DIR, "Dataset", "TMDB_movie_dataset_v11.csv")
         output_file_path = "TMDB_all_movies_enriched.csv"
         
