@@ -215,14 +215,14 @@ class ModifiedDataEnrichment:
         str_value = str(value).strip()
         
         # Check for common missing value indicators
-        if str_value in ['', 'nan', 'NaN', 'NULL', 'null', 'None']:
+        if str_value in ['', 'nan', 'NaN', 'NULL', 'null', 'None','[]','[ ]']:
             return True
             
         # For numeric fields (budget, revenue, vote_count, popularity, runtime), treat 0 as missing
         if field_name in ['budget', 'revenue', 'vote_count', 'popularity', 'runtime']:
             try:
                 numeric_value = float(str_value)
-                return numeric_value == 0 or numeric_value < 0  # Also treat negative values as invalid
+                return numeric_value == 0 or numeric_value < 0  
             except (ValueError, TypeError):
                 return True
                 
@@ -242,7 +242,7 @@ class ModifiedDataEnrichment:
             return cleaned_value.lower() in [ind.lower() for ind in empty_indicators]
         
         # For text fields, check for meaningful content
-        if field_name in ['title', 'original_title', 'overview', 'tagline', 'status', 'director', 'writers', 'cast_top_5', 'homepage']:
+        if field_name in ['title', 'director', 'writers', 'cast_top_5',]:
             # These should have actual text content
             meaningful_content = str_value not in ['', '0', 'false', 'FALSE', 'unknown', 'Unknown', 'N/A', 'n/a']
             return not meaningful_content
