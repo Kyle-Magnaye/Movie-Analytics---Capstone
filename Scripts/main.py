@@ -39,9 +39,7 @@ class MovieDataProcessor:
         
         # **Encapsulation** - Private file paths
         self._file_paths = {
-            'movies_main': os.path.join(self._root_dir, "Dataset", "movies_main.csv"),
-            'movie_extended': os.path.join(self._root_dir, "Dataset", "movie_extended.csv"),
-            'ratings': os.path.join(self._root_dir, "Dataset", "ratings.json")
+            'movies_main': os.path.join(self._root_dir, "Dataset", "your_single_movie_file.csv"),
         }
         
         # Processing statistics tracking
@@ -54,7 +52,8 @@ class MovieDataProcessor:
             'data_quality_improvements': {}
         }
 
-    def load_data(self) -> Dict[str, Any]:
+    # --- MODIFIED: Simplified data loading ---
+    def load_data(self) -> pd.DataFrame:
         """
         **Data processing functions (5%)** - Modular data loading with error handling.
         **Pandas operations (10%)** - DataFrame loading and basic operations.
@@ -63,67 +62,29 @@ class MovieDataProcessor:
         try:
             log_info("Starting data loading process")
             
-            loaded_data = {}
+            file_path = self._file_paths['movies_main']
             
-            # **Pandas operations (10%)** - CSV reading with error handling
-            for data_type, file_path in self._file_paths.items():
-                try:
-                    if data_type == 'ratings':
-                        # **Error handling (5%)** - JSON file handling
-                        loaded_data[data_type] = read_json(file_path)
-                        log_info(f"Loaded {len(loaded_data[data_type])} entries from {data_type}.json")
-                    else:
-                        # **Pandas operations (10%)** - DataFrame loading
-                        df = read_csv(file_path)
-                        loaded_data[data_type] = df
-                        log_info(f"Loaded {len(df)} rows from {data_type}.csv")
-                        
-                        # **Pandas operations (10%)** - Basic DataFrame analysis
-                        log_info(f"{data_type} columns: {list(df.columns)}")
-                        log_info(f"{data_type} memory usage: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
+            try:
+                # **Pandas operations (10%)** - DataFrame loading
+                df = read_csv(file_path)
+                log_info(f"Loaded {len(df)} rows from {os.path.basename(file_path)}")
                 
-                except FileNotFoundError as e:
-                    log_error(f"File not found: {file_path}. Error: {e}")
-                    raise
-                except Exception as e:
-                    log_error(f"Error loading {data_type}: {e}")
-                    raise
-            
-            log_info("Data loading completed successfully")
-            return loaded_data
+                # **Pandas operations (10%)** - Basic DataFrame analysis
+                log_info(f"Columns: {list(df.columns)}")
+                log_info(f"Memory usage: {df.memory_usage(deep=True).sum() / 1024 / 1024:.2f} MB")
+                
+                log_info("Data loading completed successfully")
+                return df
+                
+            except FileNotFoundError as e:
+                log_error(f"File not found: {file_path}. Error: {e}")
+                raise
+            except Exception as e:
+                log_error(f"Error loading data: {e}")
+                raise
             
         except Exception as e:
             log_error(f"Critical error in data loading: {e}")
-            raise
-
-    def merge_all_data(self, loaded_data: Dict[str, Any]) -> pd.DataFrame:
-        """
-        **Pandas operations (10%)** - Complex DataFrame merging, reshaping, and transformation.
-        **Data processing functions (5%)** - Data integration with business logic.
-        **Error handling (5%)** - Comprehensive merge error handling.
-        """
-        try:
-            log_info("Starting comprehensive data merging process")
-            
-            movies_main = loaded_data['movies_main']
-            movie_extended = loaded_data['movie_extended']
-            ratings_dict = loaded_data['ratings']
-            
-            # **Pandas operations (10%)** - DataFrame merging with comprehensive logic
-            merged_df = self.dataframe_processor.merge_movie_data(
-                movies_main, movie_extended, ratings_dict
-            )
-            
-            log_info(f"Merged data: {len(merged_df)} rows, {len(merged_df.columns)} columns")
-            
-            # **Pandas operations (10%)** - Data quality analysis after merge
-            quality_analysis = self.dataframe_processor.analyze_dataframe_quality(merged_df)
-            log_info(f"Post-merge data quality score: {quality_analysis.get('quality_score', 0):.2f}%")
-            
-            return merged_df
-            
-        except Exception as e:
-            log_error(f"Error in data merging: {e}")
             raise
 
     def create_movie_objects(self, df: pd.DataFrame) -> List[Movie]:
@@ -485,22 +446,19 @@ class MovieDataProcessor:
             # Step 1: Load data
             loaded_data = self.load_data()
             
-            # Step 2: Merge all data sources
-            merged_df = self.merge_all_data(loaded_data)
+            # Step 2: Clean DataFrame comprehensively
+            cleaned_df = self.clean_dataframe_comprehensive(loaded_data)
             
-            # Step 3: Clean DataFrame comprehensively
-            cleaned_df = self.clean_dataframe_comprehensive(merged_df)
-            
-            # Step 4: Validate and correct data with API fallback
+            # Step 3: Validate and correct data with API fallback
             validated_df = self.validate_and_correct_data(cleaned_df, enable_api_fallback=True)
             
-            # Step 5: Create Movie objects
+            # Step 4: Create Movie objects
             movie_objects = self.create_movie_objects(validated_df)
             
-            # Step 6: Generate comprehensive analytics
+            # Step 5: Generate comprehensive analytics
             analytics = self.generate_summary_analytics(validated_df)
             
-            # Step 7: Save all results
+            # Step 6: Save all results
             self.save_results(validated_df, movie_objects, analytics)
             
             # Final processing statistics
